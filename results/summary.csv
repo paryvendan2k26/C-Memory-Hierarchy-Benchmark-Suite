@@ -1,0 +1,15 @@
+experiment,parameter,variant,median,unit
+chase,32,random,1.5,ns/hop
+chase,256,random,4.83,ns/hop
+chase,4096,random,19.19,ns/hop
+chase,65536,random,116.05,ns/hop
+counters,1,compact,135.3,M increments/s
+counters,1,padded,151.1,M increments/s
+counters,2,compact,71.4,M increments/s
+counters,2,padded,297.3,M increments/s
+counters,4,compact,51.5,M increments/s
+counters,4,padded,610.6,M increments/s
+sequential,32,read,20.42,GB/s
+sequential,256,read,21.19,GB/s
+sequential,4096,read,14.15,GB/s
+sequential,65536,read,12.17,GB/s
