@@ -8,6 +8,8 @@
 #include <vector>
 #include <numeric>
 #include <random>
+#include <stdexcept>
+#include <thread>
 
 // Reading this value after a run makes the computed result observable.
 volatile std::uint64_t result_sink = 0;
@@ -131,6 +133,104 @@ void benchmark_pointer_chase(std::size_t size_bytes) {
               << nanoseconds_per_hop << " ns/hop\n";
 }
 
+struct CompactCounter {
+    std::atomic<std::uint64_t> value{0};
+};
+
+struct alignas(64) PaddedCounter {
+    std::atomic<std::uint64_t> value{0};
+};
+
+template <typename Counter>
+double run_workers(std::vector<Counter>& counters,
+                   std::size_t increments) {
+    const std::size_t thread_count = counters.size();
+
+    for (auto& counter : counters) {
+        counter.value.store(0, std::memory_order_relaxed);
+    }
+
+    std::atomic<std::size_t> ready{0};
+    std::atomic<bool> go{false};
+    std::vector<std::thread> workers;
+    workers.reserve(thread_count);
+
+    for (std::size_t i = 0; i < thread_count; ++i) {
+        workers.emplace_back([&, i] {
+            ready.fetch_add(1, std::memory_order_relaxed);
+
+            while (!go.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+
+            for (std::size_t n = 0; n < increments; ++n) {
+                counters[i].value.fetch_add(
+                    1, std::memory_order_relaxed
+                );
+            }
+        });
+    }
+
+    while (ready.load(std::memory_order_relaxed) != thread_count) {
+        std::this_thread::yield();
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    go.store(true, std::memory_order_release);
+
+    for (auto& worker : workers) {
+        worker.join();
+    }
+
+    const auto end = std::chrono::steady_clock::now();
+
+    std::uint64_t total = 0;
+    for (const auto& counter : counters) {
+        total += counter.value.load(std::memory_order_relaxed);
+    }
+
+    if (total != thread_count * increments) {
+        throw std::runtime_error("Counter total is incorrect");
+    }
+
+    return std::chrono::duration<double>(end - start).count();
+}
+
+template <typename Counter>
+double median_run(std::size_t thread_count,
+                  std::size_t increments) {
+    std::vector<Counter> counters(thread_count);
+    std::vector<double> times;
+
+    for (int trial = 0; trial < trial_count; ++trial) {
+        times.push_back(run_workers(counters, increments));
+    }
+
+    std::sort(times.begin(), times.end());
+    return times[trial_count / 2];
+}
+
+void benchmark_false_sharing(std::size_t thread_count) {
+    constexpr std::size_t increments = 5'000'000;
+
+    const double compact_seconds =
+        median_run<CompactCounter>(thread_count, increments);
+
+    const double padded_seconds =
+        median_run<PaddedCounter>(thread_count, increments);
+
+    const double operations =
+        static_cast<double>(thread_count) * increments;
+
+    std::cout << thread_count << " threads: "
+              << "compact "
+              << std::fixed << std::setprecision(1)
+              << operations / compact_seconds / 1'000'000.0
+              << " M increments/s, padded "
+              << operations / padded_seconds / 1'000'000.0
+              << " M increments/s\n";
+}
+
 int main() {
     std::cout << "Sequential read throughput (median of " << trial_count
               << " trials)\n";
@@ -143,6 +243,12 @@ int main() {
 
 for (std::size_t size : {32 * KiB, 256 * KiB, 4 * MiB, 64 * MiB}) {
     benchmark_pointer_chase(size);
+}
+
+std::cout << "\nCounter throughput: compact vs padded\n";
+
+for (std::size_t threads : {1, 2, 4}) {
+    benchmark_false_sharing(threads);
 }
     return 0;
 }
